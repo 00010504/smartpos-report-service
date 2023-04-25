@@ -1,0 +1,123 @@
+variables:
+  NAMESPACE_STAGING: "test"
+  NAMESPACE_DEV: "dev"
+  NAMESPACE_MAIN: "prod"
+
+before_script:
+  ## docker login
+  - docker login $CI_REGISTRY --username $CI_REGISTRY_USER --password $CI_REGISTRY_PASSWORD
+
+stages:
+  - build
+  - migrate-postgres
+  - migrate-clickhouse
+  - deploy
+
+build_image_prod:
+  stage: build
+  image: gitlab.7i.uz:5050/docker/docker:dind
+  script:
+    - make build-image TAG=$CI_PIPELINE_IID PROJECT_NAME=$CI_PROJECT_NAMESPACE REGISTRY=$CI_REGISTRY
+    - make push-image TAG=$CI_PIPELINE_IID PROJECT_NAME=$CI_PROJECT_NAMESPACE REGISTRY=$CI_REGISTRY
+  only:
+    - master
+
+build_image_dev:
+  stage: build
+  image: gitlab.7i.uz:5050/docker/docker:dind
+  script:
+    - make build-image TAG=$CI_PIPELINE_IID PROJECT_NAME=$CI_PROJECT_NAMESPACE REGISTRY=$CI_REGISTRY ENV_TAG=dev
+    - make push-image TAG=$CI_PIPELINE_IID PROJECT_NAME=$CI_PROJECT_NAMESPACE REGISTRY=$CI_REGISTRY ENV_TAG=dev
+  only:
+    - dev
+
+build_image_staging:
+  stage: build
+  image: gitlab.7i.uz:5050/docker/docker:dind
+  script:
+    - make build-image TAG=$CI_PIPELINE_IID PROJECT_NAME=$CI_PROJECT_NAMESPACE REGISTRY=$CI_REGISTRY ENV_TAG=test
+    - make push-image TAG=$CI_PIPELINE_IID PROJECT_NAME=$CI_PROJECT_NAMESPACE REGISTRY=$CI_REGISTRY ENV_TAG=test
+  only:
+    - staging
+
+migrate_prod:
+  stage: migrate-postgres
+  image: gitlab.7i.uz:5050/docker/docker:dind
+  script:
+    - migrate -path=$PWD/migrations/postgres -database="${INVAN_REPORT_SERVICE_PRODDB}?sslmode=disable&x-migrations-table=migrations_$CI_PROJECT_NAME" up
+  only:
+    - master
+
+migrate_dev:
+  stage: migrate-postgres
+  image: gitlab.7i.uz:5050/docker/docker:dind
+  script:
+    - migrate -path=$PWD/migrations/postgres -database="${INVAN_REPORT_SERVICE_DEVDB}?sslmode=disable&x-migrations-table=migrations_$CI_PROJECT_NAME" up
+  only:
+    - dev
+
+migrate_staging:
+  stage: migrate-postgres
+  image: gitlab.7i.uz:5050/docker/docker:dind
+  script:
+    - migrate -path=$PWD/migrations/postgres -database="${INVAN_REPORT_SERVICE_TESTDB}?sslmode=disable&x-migrations-table=migrations_$CI_PROJECT_NAME" up
+  only:
+    - staging
+
+migrate_clickhouse_prod:
+  stage: migrate-clickhouse
+  image: gitlab.7i.uz:5050/docker/docker:dind
+  script:
+    - migrate -path=$PWD/migrations/clickhouse -database="${INVAN_REPORT_SERVICE_PRODDB_CH}&x-migrations-table=migrations_$CI_PROJECT_NAME" up
+  only:
+    - master
+
+migrate_clickhouse_dev:
+  stage: migrate-clickhouse
+  image: gitlab.7i.uz:5050/docker/docker:dind
+  script:
+    - echo ${INVAN_REPORT_SERVICE_DEVDB_CH}
+    - migrate -path=$PWD/migrations/clickhouse -database="${INVAN_REPORT_SERVICE_DEVDB_CH}&x-migrations-table=migrations_$CI_PROJECT_NAME" up
+  only:
+    - dev
+
+migrate_clickhouse_staging:
+  stage: migrate-clickhouse
+  image: gitlab.7i.uz:5050/docker/docker:dind
+  script:
+    - migrate -path=$PWD/migrations/clickhouse -database="${INVAN_REPORT_SERVICE_TESTDB_CH}&x-migrations-table=migrations_$CI_PROJECT_NAME" up
+  only:
+    - staging
+
+deploy_to_prod:
+  stage: deploy
+  image: gitlab.7i.uz:5050/docker/docker:dind
+  script:
+    - cp $INVAN_KUBECONFIG ~/.kube/config
+    - DEPLOYMENT=$(echo $CI_PROJECT_NAME | sed s/_/-/g | sed s/$CI_PROJECT_NAMESPACE-//g)
+    - helm repo add --username $HELM_REGISTRY_USERNAME --password $HELM_REGISTRY_PASSWORD $HELM_REPO_NAME $HELM_REGISTRY_PATH
+    - helm upgrade --install $DEPLOYMENT $HELM_REPO_NAME/$HELM_CHART_NAME --set=image.tag=$CI_PIPELINE_IID --values .helm/values-prod.yml -n $NAMESPACE_MAIN
+  only:
+    - master
+
+deploy_to_dev:
+  stage: deploy
+  image: gitlab.7i.uz:5050/docker/docker:dind
+  script:
+    - cp $INVAN_KUBECONFIG ~/.kube/config
+    - DEPLOYMENT=$(echo $CI_PROJECT_NAME | sed s/_/-/g | sed s/$CI_PROJECT_NAMESPACE-//g)
+    - helm repo add --username $HELM_REGISTRY_USERNAME --password $HELM_REGISTRY_PASSWORD $HELM_REPO_NAME $HELM_REGISTRY_PATH
+    - helm upgrade --install $DEPLOYMENT $HELM_REPO_NAME/$HELM_CHART_NAME --set=image.tag=$CI_PIPELINE_IID --values .helm/values-dev.yml -n $NAMESPACE_DEV
+  only:
+    - dev
+
+deploy_to_staging:
+  stage: deploy
+  image: gitlab.7i.uz:5050/docker/docker:dind
+  script:
+    - cp $INVAN_KUBECONFIG ~/.kube/config
+    - DEPLOYMENT=$(echo $CI_PROJECT_NAME | sed s/_/-/g | sed s/$CI_PROJECT_NAMESPACE-//g)
+    - helm repo add --username $HELM_REGISTRY_USERNAME --password $HELM_REGISTRY_PASSWORD $HELM_REPO_NAME $HELM_REGISTRY_PATH
+    - helm upgrade --install $DEPLOYMENT $HELM_REPO_NAME/$HELM_CHART_NAME --set=image.tag=$CI_PIPELINE_IID --values .helm/values-test.yml -n $NAMESPACE_STAGING
+  only:
+    - staging
